@@ -2545,6 +2545,11 @@ fn host_texture_as(
         texture = None;
     }
     if let Some(t) = &texture {
+        // What every frame draws into stays on the card before what the
+        // title only fills (`VICTORY_RESIDENCY_PRIORITY`).
+        if !reserved && d.flags & (TARGET | DEPTH | UNORDERED) != 0 {
+            crate::residency::keep_on_card(&host.device, t);
+        }
         crate::host::name(t, || {
             format!("texture {}x{} f{} flags {:#x}", d.width, d.height, d.format, d.flags)
         });

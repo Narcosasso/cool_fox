@@ -9408,12 +9408,13 @@ impl Host {
         let last = [0, 1, 2].map(|i| LAST[i].swap(now[i], Ordering::Relaxed));
         if last[0] != 0 && last[0].abs_diff(own.Budget) >= (256u64 << 20) {
             tracing::info!(
-                "the system changed the budget of the card's memory from {} MB to {} MB (frame {}); at the last look {} MB of the card's and {} MB of the PC's shared memory were in use",
+                "the system changed the budget of the card's memory from {} MB to {} MB (frame {}); at the last look {} MB of the card's and {} MB of the PC's shared memory were in use; {} textures kept on the card first (VICTORY_RESIDENCY_PRIORITY)",
                 last[0] >> 20,
                 own.Budget >> 20,
                 crate::frame::current(),
                 last[1] >> 20,
-                last[2] >> 20
+                last[2] >> 20,
+                crate::residency::KEPT_ON_CARD.load(Ordering::Relaxed)
             );
             self.log_video_memory("right after that change");
         }
