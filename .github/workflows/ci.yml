@@ -4,6 +4,8 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Run by hand from the Actions tab (any branch), e.g. before testing a build.
+  workflow_dispatch:
 
 permissions:
   contents: read
