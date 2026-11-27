@@ -537,7 +537,7 @@ pub fn emit(
         // Off unless asked for (`VICTORY_WAVE_WIDE=1`), for a console wave run as two host
         // waves: this form puts group barriers inside branches and loops, and runs 121-124
         // lost the card in a submission of two programs that had just moved to it
-        // (`ptfx_CS_lightAtlas_Sprite` and `_Trail`). The 32-lane programs' form below, which
+        // (two particle light-atlas programs). The 32-lane programs' form below, which
         // has no barrier, stays on.
         let wide_option = std::env::var_os("VICTORY_WAVE_WIDE");
         // Both archived kernels use one logical wave per group and have

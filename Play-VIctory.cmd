@@ -4,9 +4,12 @@ if not "%~1"=="" if /i not "%~1"=="pareto-residency" (
   echo Usage: Play-VIctory.cmd pareto-residency 1>&2
   exit /b 2
 )
-if not defined VICTORY_GAME_DIR set "VICTORY_GAME_DIR=%~dp0..\GTA6.Xbox.v1.0.2.1"
-if not exist "%VICTORY_GAME_DIR%\game_scarlett_master.exe" (
-  echo Set VICTORY_GAME_DIR to your own dump folder containing game_scarlett_master.exe. 1>&2
+if not defined VICTORY_GAME_EXE (
+  echo Set VICTORY_GAME_EXE to the executable in your own dump of the title. 1>&2
+  exit /b 2
+)
+if not exist "%VICTORY_GAME_EXE%" (
+  echo No "%VICTORY_GAME_EXE%": set VICTORY_GAME_EXE to the executable in your own dump. 1>&2
   exit /b 2
 )
 set "runner=%~dp0victory-3d-rtx-pareto-residency.exe"
@@ -36,5 +39,5 @@ if not defined VICTORY_UPLOAD_AHEAD set "VICTORY_UPLOAD_AHEAD=1"
 if not defined VICTORY_LEVELS_ON_DEMAND set "VICTORY_LEVELS_ON_DEMAND=1"
 if not defined VICTORY_CARD_BUFFERS_MIN_KB set "VICTORY_CARD_BUFFERS_MIN_KB=64"
 if not defined VICTORY_LOG if not defined RUST_LOG set "VICTORY_LOG=warn"
-"%runner%" run "%VICTORY_GAME_DIR%\game_scarlett_master.exe" --console series-s --execute
+"%runner%" run "%VICTORY_GAME_EXE%" --console series-s --execute
 exit /b %errorlevel%
