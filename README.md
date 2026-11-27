@@ -63,6 +63,11 @@ cargo build --locked --profile diag -p victory --features diagnostics
 scripts\play.ps1 -Exe <path of your copy's executable>
 ```
 
+On a laptop with two GPUs the one that runs mesh shaders is taken, not
+Windows' default (often the integrated one); the log names every GPU seen
+and the one taken (`host GPU`). `VICTORY_ADAPTER` picks another, by its
+number in that list or part of its name, e.g. `$env:VICTORY_ADAPTER='rtx'`.
+
 `scripts\play.ps1 -Safe` leaves out the newest, faster ways; try it first when
 something is wrong. `-RayTracing` turns the title's ray-traced indirect light on.
 

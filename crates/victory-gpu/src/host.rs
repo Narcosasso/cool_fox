@@ -900,7 +900,12 @@ fn create() -> windows::core::Result<Host> {
             D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_12_0, &mut device)?;
             tracing::info!("host device on the software adapter (WARP)");
         } else {
-            D3D12CreateDevice(None, D3D_FEATURE_LEVEL_12_0, &mut device)?;
+            // The GPU that runs mesh shaders, not DXGI's default, which on
+            // hybrid laptops is often the integrated one (`VICTORY_ADAPTER`).
+            match crate::adapter::pick() {
+                Some(adapter) => D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_12_0, &mut device)?,
+                None => D3D12CreateDevice(None, D3D_FEATURE_LEVEL_12_0, &mut device)?,
+            }
             // Whether a GPU hang ends the run or freezes the PC (#1054).
             crate::tdr::log();
         }
