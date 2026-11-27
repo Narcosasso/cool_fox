@@ -1,4 +1,36 @@
-# VIctory on an RX 7900 XTX
+# VIctory on an RTX 5070 Laptop
+
+## The target of this fork
+
+This fork is tuned for one machine, a gaming laptop:
+
+| | |
+|---|---|
+| GPU | NVIDIA GeForce RTX 5070 Laptop, 8 GB GDDR7 (Blackwell), with an Intel integrated GPU beside it (hybrid graphics) |
+| CPU | Intel Core i7-14650HX: 8 performance and 8 efficient cores, 24 threads |
+| RAM | 64 GB DDR5-5600 |
+| System | Windows 11 Pro 26H2 |
+
+What that means for the work:
+
+- **8 GB on the card is the limit.** The RTX 5090 runs of the bug journal used
+  17-19 GB. What does not fit goes to the PC's shared memory and is read across
+  the bus, so card memory comes first: `scripts\play.ps1 -LowVram` (Series S,
+  texture levels on demand), `VICTORY_RESIDENCY_PRIORITY=1` (render targets
+  stay on the card first).
+- **The thread that prepares submissions is the wall** (docs/findings.md), and
+  the 64 GB of RAM leave room to do more of its work early:
+  `VICTORY_PREDICT=1` measures how much of it the frame before predicts.
+- **Hybrid graphics:** the host device is made on the GPU that runs mesh
+  shaders, not on Windows' default (`VICTORY_ADAPTER` overrides it). A
+  discrete-only (MUX) mode, mains power and the maker's performance profile
+  help.
+- **Every change is measured**, from the same save, with logs compared by
+  `victory compare`; new switches stay off until a comparison on this laptop
+  says they help.
+
+The sections below describe the builds and measurements this fork started
+from (RTX 5090 and RX 7900 XTX); their figures are not of this laptop.
 
 ## Run the codec_d Windows build
 
