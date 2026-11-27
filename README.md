@@ -68,6 +68,13 @@ Windows' default (often the integrated one); the log names every GPU seen
 and the one taken (`host GPU`). `VICTORY_ADAPTER` picks another, by its
 number in that list or part of its name, e.g. `$env:VICTORY_ADAPTER='rtx'`.
 
+With 8 GB on the card, `scripts\play.ps1 -LowVram` (Series S, texture levels
+on demand). To compare two settings, run each from the same save with its log
+redirected (`... 2> run-a.log`), then `target\diag\victory.exe compare run-a.log
+run-b.log`: median, p90 and worst ms a frame over intervals of play (1,000
+draws a frame or more), and the card's memory, of which the PC's shared memory
+in use is what did not fit.
+
 `scripts\play.ps1 -Safe` leaves out the newest, faster ways; try it first when
 something is wrong. `-RayTracing` turns the title's ray-traced indirect light on.
 

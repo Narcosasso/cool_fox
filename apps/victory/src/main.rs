@@ -4,6 +4,7 @@
 //! the user's cache directory (outside the repository).
 
 mod census;
+mod compare;
 mod inspect;
 #[cfg(all(windows, feature = "diagnostics"))]
 mod replay;
@@ -155,6 +156,15 @@ enum Command {
     Replay(replay::Replay),
     /// Show the resolved configuration and check it.
     Config,
+    /// Compare the frame and card memory lines of runs' logs (the first is
+    /// the base): `victory compare run-a.log run-b.log`.
+    Compare {
+        #[arg(required = true)]
+        logs: Vec<PathBuf>,
+        /// Intervals with fewer draws a frame (menus, loading) do not count.
+        #[arg(long, default_value_t = 1000.0)]
+        min_draws: f64,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -232,6 +242,7 @@ fn main() -> Result<()> {
         #[cfg(all(windows, feature = "diagnostics"))]
         Command::Replay(options) => replay::run(options),
         Command::Config => show_config(),
+        Command::Compare { logs, min_draws } => Ok(compare::run(&logs, min_draws)?),
     }
 }
 

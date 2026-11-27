@@ -5,6 +5,8 @@
 # -Build        target\diag (the default, the build all measurements are of) or target\release
 # -More         other settings: -More @{VICTORY_PANEL='1'}
 # -Console      series-x (the default) or series-s: the title then loads smaller textures, for 8-12 GB cards
+# -LowVram      for 8 GB cards: series-s, and texture levels given memory only when drawn (VICTORY_LEVELS_ON_DEMAND)
+# Compare runs afterwards: target\diag\victory.exe compare run-a.log run-b.log
 # Run it from a normal window, not as administrator: the driver then keeps its shader cache elsewhere.
 param(
     [Parameter(Mandatory)][string]$Exe,
@@ -12,7 +14,8 @@ param(
     [switch]$RayTracing,
     [ValidateSet('diag', 'release')][string]$Build = 'diag',
     [hashtable]$More = @{},
-    [ValidateSet('series-x', 'series-s')][string]$Console = 'series-x'
+    [ValidateSet('series-x', 'series-s')][string]$Console = 'series-x',
+    [switch]$LowVram
 )
 $settings = @{
     VICTORY_TEXTURE_NO_WAIT = '1'; VICTORY_RELAY = '2'; VICTORY_WIDE_BACK = '1'; VICTORY_CARD_REHASH_RUNS = '1'
@@ -25,6 +28,7 @@ if ($Safe) {
 } else {
     $settings.VICTORY_THIN = '1'; $settings.VICTORY_JOIN_PARTS = '8'; $settings.VICTORY_UPLOAD_AHEAD = '1'
 }
+if ($LowVram) { $Console = 'series-s'; $settings.VICTORY_LEVELS_ON_DEMAND = '1' }
 if ($RayTracing) { $settings.VICTORY_BVH_BUILDER = '1' }
 foreach ($k in $More.Keys) { $settings[$k] = $More[$k] }
 

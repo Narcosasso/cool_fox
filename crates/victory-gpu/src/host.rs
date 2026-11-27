@@ -8927,6 +8927,17 @@ impl Meter {
                 placed = crate::descriptor::host::PLACED_TEXTURE_SLOTS.load(Ordering::Relaxed),
                 objects = crate::descriptor::host::OBJECT_TEXTURE_SLOTS.load(Ordering::Relaxed)
             );
+            // Beside the frame line, for `victory compare`: a card short of
+            // memory shows as the PC's shared memory in use (what the system
+            // moved off the card, read across the bus).
+            if let Some([budget, used, _, shared]) = crate::host::host().and_then(|h| h.video_memory()) {
+                tracing::info!(
+                    "card memory: {} MB in use of a {} MB budget, {} MB of the PC's shared memory in use",
+                    used >> 20,
+                    budget >> 20,
+                    shared >> 20
+                );
+            }
             #[cfg(feature = "diagnostics")]
             {
                 let put = [0, 1, 2, 3].map(|i| crate::shadow::PUT[i].swap(0, Ordering::Relaxed) as f64 / frames);
