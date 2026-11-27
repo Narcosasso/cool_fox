@@ -5492,6 +5492,8 @@ impl Host {
         let mut submitted = self.submitted.lock().unwrap_or_else(|e| e.into_inner());
         let was_working = working(true);
         submitting(1, runs.len());
+        // Under the lock: submissions are counted in the order prepared.
+        crate::predict::begin(crate::frame::current(), runs.len());
         #[cfg(feature = "diagnostics")]
         let ahead = Split::begin();
         #[cfg(feature = "diagnostics")]
@@ -7953,6 +7955,7 @@ impl Batch {
         let _one = crate::timeline::span("a copy's refresh");
         let copied = shadow.update(from, to - from);
         let us = started.elapsed().as_micros() as u64;
+        crate::predict::note(shadow.id(), from, to, copied, us);
         #[cfg(feature = "diagnostics")]
         crate::copystat::range(from, to - from, us, 0);
         PREPARING[0].fetch_add(us, Ordering::Relaxed);
@@ -8810,7 +8813,12 @@ impl Meter {
         // Over the same frames as the counts above.
         #[cfg(feature = "diagnostics")]
         let drops = crate::pipeline::take_drops();
+        // Taken every interval, as the counts above, and logged with them.
+        let prediction = crate::predict::line(frames);
         if self.logged.elapsed() >= std::time::Duration::from_secs(5) {
+            if let Some(line) = &prediction {
+                tracing::info!("{line}");
+            }
             self.logged = std::time::Instant::now();
             tracing::info!(
                 "placed texture views: {} writes of another view of the texture a slot showed (it kept the old view until the new was made)",

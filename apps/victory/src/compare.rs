@@ -65,6 +65,15 @@ pub fn memory(line: &str) -> Option<Memory> {
     Some(Memory { used, budget, shared })
 }
 
+/// The refresh prediction line's numbers (`VICTORY_PREDICT=1`): ms of
+/// threads' time of refreshes that copied, and the share of it predicted.
+pub fn prediction(line: &str) -> Option<(f64, f64)> {
+    let start = line.find("refresh prediction (")?;
+    let (ms, at) = before(line, start, " ms of threads' time")?;
+    let (share, _) = before(line, at, " % of their time")?;
+    Some((ms, share))
+}
+
 /// The value at fraction `q` of `sorted` (nearest rank); `NaN` if empty.
 pub fn quantile(sorted: &[f64], q: f64) -> f64 {
     if sorted.is_empty() {
@@ -92,6 +101,8 @@ pub struct Summary {
     pub draws: f64,
     /// Peak in use, budget at that peak, peak shared, median shared.
     pub memory: Option<[f64; 4]>,
+    /// Median refresh ms and median share predicted (`VICTORY_PREDICT=1`).
+    pub prediction: Option<[f64; 2]>,
 }
 
 pub fn summarize(text: &str, min_draws: f64) -> Summary {
@@ -105,7 +116,15 @@ pub fn summarize(text: &str, min_draws: f64) -> Summary {
         let shared = sorted(memory.iter().map(|m| m.shared));
         [p.used, p.budget, shared[shared.len() - 1], quantile(&shared, 0.5)]
     });
+    let predictions: Vec<(f64, f64)> = text.lines().filter_map(prediction).collect();
+    let prediction = (!predictions.is_empty()).then(|| {
+        [
+            quantile(&sorted(predictions.iter().map(|p| p.0)), 0.5),
+            quantile(&sorted(predictions.iter().map(|p| p.1)), 0.5),
+        ]
+    });
     Summary {
+        prediction,
         intervals: all.len(),
         counted: counted.len(),
         ms: [quantile(&ms, 0.5), quantile(&ms, 0.9), quantile(&ms, 1.0)],
@@ -145,6 +164,9 @@ pub fn table(logs: &[(String, Summary)]) -> String {
     row(&mut out, "card MB budget", cells(&mem(1)));
     row(&mut out, "shared MB peak", cells(&mem(2)));
     row(&mut out, "shared MB median", cells(&mem(3)));
+    let pred = |i: usize| move |s: &Summary| s.prediction.map_or("-".into(), |p| format!("{:.1}", p[i]));
+    row(&mut out, "refresh ms (threads)", cells(&pred(0)));
+    row(&mut out, "predicted % of it", cells(&pred(1)));
     if let Some((_, base)) = logs.first() {
         row(
             &mut out,
@@ -197,6 +219,15 @@ mod tests {
     fn a_memory_line_is_read() {
         let line = "INFO victory_gpu::host: card memory: 7012 MB in use of a 7340 MB budget, 1830 MB of the PC's shared memory in use";
         assert_eq!(memory(line), Some(Memory { used: 7012.0, budget: 7340.0, shared: 1830.0 }));
+    }
+
+    #[test]
+    fn a_prediction_line_is_read() {
+        let line = "INFO victory_gpu::host: refresh prediction (VICTORY_PREDICT=1), per frame: 10 submissions, 200 refreshes, \
+            50 of them copied 2.0 MB in 10.0 ms of threads' time; the frame before predicted 40 of those (75 % of their time, \
+            7.5 ms; 75 % of their bytes)";
+        assert_eq!(prediction(line), Some((10.0, 75.0)));
+        assert_eq!(prediction(FRAME), None);
     }
 
     #[test]
