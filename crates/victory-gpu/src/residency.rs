@@ -20,6 +20,50 @@ static NEXT_COMMIT_SAMPLE: AtomicU64 = AtomicU64::new(0);
 static AVAILABLE_COMMIT: AtomicU64 = AtomicU64::new(u64::MAX);
 static RETRY_UPLOAD_AT: AtomicU64 = AtomicU64::new(0);
 
+/// `VICTORY_RESIDENCY_PRIORITY=1`: render targets, depth buffers and
+/// textures shaders write get high residency priority, so that when the
+/// card's memory is over its budget Windows moves the textures the title
+/// only fills (read-only, streamed, re-uploadable) to system memory before
+/// what every frame draws into. Without priorities the video memory manager
+/// may demote either, and a demoted target is read and written across the
+/// bus every frame. Meant for 8-12 GB cards; off by default until measured.
+pub(crate) fn priority_on() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = std::env::var_os("VICTORY_RESIDENCY_PRIORITY").is_some_and(|v| v == "1");
+        if on {
+            tracing::info!("render targets and shader-written textures kept on the card first (VICTORY_RESIDENCY_PRIORITY=1)");
+        }
+        on
+    })
+}
+
+/// Textures given high residency priority, for the log.
+pub(crate) static KEPT_ON_CARD: AtomicU64 = AtomicU64::new(0);
+
+/// [`priority_on`]: `texture` is one the frames draw into or shaders write.
+pub(crate) fn keep_on_card(
+    device: &windows::Win32::Graphics::Direct3D12::ID3D12Device,
+    texture: &windows::Win32::Graphics::Direct3D12::ID3D12Resource,
+) {
+    use windows::Win32::Graphics::Direct3D12::{D3D12_RESIDENCY_PRIORITY_HIGH, ID3D12Device1, ID3D12Pageable};
+    use windows::core::Interface;
+    if !priority_on() {
+        return;
+    }
+    let (Ok(device), Ok(pageable)) = (device.cast::<ID3D12Device1>(), texture.cast::<ID3D12Pageable>()) else {
+        return;
+    };
+    let objects = [Some(pageable)];
+    // SAFETY: one object and one priority, both alive through the call.
+    match unsafe { device.SetResidencyPriority(1, objects.as_ptr(), &D3D12_RESIDENCY_PRIORITY_HIGH) } {
+        Ok(()) => {
+            KEPT_ON_CARD.fetch_add(1, Ordering::Relaxed);
+        }
+        Err(e) => tracing::warn!(error = %e, "residency priority refused"),
+    }
+}
+
 pub(crate) fn allocation_error(error: &windows::core::Error) {
     if error.code() == windows::Win32::Foundation::E_OUTOFMEMORY {
         RETRY_UPLOAD_AT.fetch_max(crate::host::coarse_ms().saturating_add(500), Ordering::Relaxed);

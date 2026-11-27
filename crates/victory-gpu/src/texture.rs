@@ -73,6 +73,10 @@ pub(crate) struct Staging {
     /// of 1,120 textures in one frame of run 18.)
     dirty: std::sync::atomic::AtomicBool,
     uploaded: std::sync::atomic::AtomicBool,
+    /// Diagnostics: the submission ([`crate::host::submissions`]) whose
+    /// lists last recorded an upload from the staging buffer; 0: none.
+    #[cfg(feature = "diagnostics")]
+    sent: std::sync::atomic::AtomicU64,
     /// When a list last recorded a use of it (`crate::host::moment`).
     used: std::sync::atomic::AtomicU64,
     /// How many bytes of the texture's memory were mapped when a list last
@@ -432,15 +436,39 @@ thread_local! {
     static READ: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// The most bytes a thread's read buffer keeps between reads
+/// (`VICTORY_READ_KEEP_MB`; unset, all it ever grew to). A buffer grows to
+/// the largest texture its thread read and stays that size for the run; one
+/// over this is let go after the read, and the next read makes it anew.
+fn read_keep() -> Option<usize> {
+    static MOST: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *MOST.get_or_init(|| {
+        std::env::var("VICTORY_READ_KEEP_MB")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .map(|mb| mb.saturating_mul(1 << 20))
+    })
+}
+
 /// Calls `f` with `size` bytes of this thread's read buffer (their
 /// contents are whatever the last texture left).
 fn with_read<R>(size: usize, f: impl FnOnce(&mut [u8]) -> R) -> R {
+    with_read_keeping(size, read_keep(), f)
+}
+
+/// [`with_read`], the buffer let go after `f` if it holds more than `keep`
+/// bytes.
+fn with_read_keeping<R>(size: usize, keep: Option<usize>, f: impl FnOnce(&mut [u8]) -> R) -> R {
     READ.with(|read| {
         let mut read = read.borrow_mut();
         if read.len() < size {
             read.resize(size, 0);
         }
-        f(&mut read[..size])
+        let out = f(&mut read[..size]);
+        if keep.is_some_and(|most| read.capacity() > most) {
+            *read = Vec::new();
+        }
+        out
     })
 }
 
@@ -507,6 +535,26 @@ pub(crate) fn let_go() -> [u64; 2] {
     [LET_GO[0].load(Relaxed), LET_GO[1].load(Relaxed)]
 }
 
+/// How long a staging buffer no list used is kept, in milliseconds, in place
+/// of what free memory decides (`VICTORY_STAGING_IDLE_MS`; unset, that).
+/// With 12 GiB or more free that is five minutes, which kept 40-46 GB alive
+/// in long runs; a shorter time lets go of them sooner.
+fn staging_idle_ms() -> Option<u64> {
+    static MS: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *MS.get_or_init(|| {
+        std::env::var("VICTORY_STAGING_IDLE_MS")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+    })
+}
+
+/// The idle time to use: `over` if one was set, no shorter than the 2 s
+/// free memory alone can come down to (`crate::host::ram_idle_ms` under
+/// high pressure), else `computed`.
+pub(crate) fn idle_ms(over: Option<u64>, computed: u64) -> u64 {
+    over.map_or(computed, |ms| ms.max(2_000))
+}
+
 /// Lets go of the staging buffers no list recorded a use of for `IDLE_MS`
 /// and `IDLE_FRAMES` frames and no list holds: a staging buffer is system memory the size of its
 /// texture, kept so that an unchanged texture is not uploaded again, and
@@ -524,7 +572,10 @@ pub(crate) fn let_go_idle() {
     if map.is_empty() {
         return;
     }
-    let idle_ms = crate::host::ram_idle_ms(crate::residency::headroom());
+    let idle_ms = idle_ms(
+        staging_idle_ms(),
+        crate::host::ram_idle_ms(crate::residency::headroom()),
+    );
     // A list that recorded an upload or a check holds the staging until it
     // is reset: one only the table holds is named by no list, recorded or
     // running.
@@ -846,6 +897,10 @@ pub(crate) fn upload_from(list: &HostList, resource: This, first: u32) {
         list.defer_host(move || {
             staging.uploaded.store(true, Relaxed);
             staging.dirty.store(false, Relaxed);
+            // Run inside `Host::submit`, under its lock, after this
+            // submission took its number: `STARTED` is this submission.
+            #[cfg(feature = "diagnostics")]
+            staging.sent.store(crate::host::submissions().0, Relaxed);
         });
     }
     // A host copy that took the place of one with fewer levels: the slots
@@ -869,7 +924,7 @@ pub(crate) fn upload_from(list: &HostList, resource: This, first: u32) {
         list.defer_host(move || noted.note_held());
         return;
     };
-    list.defer_texture(staging.clone());
+    list.defer_texture_ready(staging.clone());
     list.defer_host(move || {
         let waiting = on_demand.uploaded(staging.detiled.load(Relaxed), staging.memory as u64);
         staging.waiting.store(if waiting { crate::host::moment().max(1) } else { 0 }, Relaxed);
@@ -879,6 +934,14 @@ pub(crate) fn upload_from(list: &HostList, resource: This, first: u32) {
             crate::descriptor::host::levels_waiting(staging.memory as u64);
         }
     });
+}
+
+/// Diagnostics: whether the upload recorded by submission `sent` may not
+/// have run yet when submission `landed` is the newest finished one (both
+/// numbered as [`crate::host::submissions`]); `sent` 0: none recorded.
+#[cfg(any(test, feature = "diagnostics"))]
+fn in_air(sent: u64, landed: u64) -> bool {
+    sent != 0 && sent > landed
 }
 
 fn record_upload(
@@ -1438,7 +1501,10 @@ impl Staging {
         if read {
             UNLOCKED[0].fetch_add(1, Relaxed);
             size
-        } else if last.hash.is_none() && fill_unlocked() {
+        } else if last.hash.is_none() && (fill_unlocked() || self.on_demand) {
+            // Unmapped mip levels are expected in a sparse texture. Its
+            // first upload must fill the mapped pages even when ordinary
+            // committed textures wait for a complete source snapshot.
             self.fill(last, size)
         } else {
             UNLOCKED[1].fetch_add(1, Relaxed);
@@ -1490,6 +1556,22 @@ impl Staging {
     /// Detiles `tiled` (the texture's memory) into the staging buffer.
     fn detile(&self, tiled: &[u8]) {
         self.dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+        // Diagnostics: the staging buffer is written while an earlier
+        // submission that copies from it may not have run yet (nothing waits
+        // for it): that copy can upload these bytes, or a mix. Counted only.
+        // `FINISHED` is the landed number (no store of our own): the relay
+        // lander and the waited-for path set it once the card is done, so it
+        // is never ahead of the card; it lags by the landing's own work,
+        // which can only over-count. A detile of the submission that set
+        // `sent` is left out: its own lists' copy is meant to take it.
+        #[cfg(feature = "diagnostics")]
+        {
+            let sent = self.sent.load(std::sync::atomic::Ordering::Relaxed);
+            let (started, finished) = crate::host::submissions();
+            if sent < started && in_air(sent, finished) {
+                crate::copystat::add(crate::copystat::C::TexInAir, 1);
+            }
+        }
         // Levels on demand: which levels are the title's is judged here,
         // once, for what the staging buffer holds from now on. The step
         // that gives levels their memory goes by this answer.
@@ -1932,6 +2014,8 @@ fn staging(resource: This, copy: &crate::resource::HostTexture, first: u32) -> O
         last: Mutex::default(),
         dirty: std::sync::atomic::AtomicBool::new(true),
         uploaded: std::sync::atomic::AtomicBool::new(false),
+        #[cfg(feature = "diagnostics")]
+        sent: std::sync::atomic::AtomicU64::new(0),
         used: std::sync::atomic::AtomicU64::new(crate::host::moment()),
         expected: std::sync::atomic::AtomicU64::new(0),
         on_demand,
@@ -1945,8 +2029,50 @@ fn staging(resource: This, copy: &crate::resource::HostTexture, first: u32) -> O
 }
 
 #[cfg(test)]
+mod in_air_tests {
+    use super::in_air;
+
+    #[test]
+    fn in_air_until_its_submission_lands() {
+        // Never uploaded by a list.
+        assert!(!in_air(0, 0));
+        assert!(!in_air(0, 5));
+        // Sent by submission 7: in the air until 7 has finished.
+        assert!(in_air(7, 6));
+        assert!(!in_air(7, 7));
+        assert!(!in_air(7, 8));
+    }
+}
+
+#[cfg(test)]
 mod title_memory_tests {
     use super::with_title;
+
+    /// No override leaves free memory's time as it was; one under 2 s is 2 s.
+    #[test]
+    fn an_idle_override_is_two_seconds_or_more() {
+        use super::idle_ms;
+        assert_eq!(idle_ms(None, 300_000), 300_000);
+        assert_eq!(idle_ms(None, 2_000), 2_000);
+        assert_eq!(idle_ms(Some(10_000), 300_000), 10_000);
+        assert_eq!(idle_ms(Some(0), 300_000), 2_000);
+        assert_eq!(idle_ms(Some(1_999), 10_000), 2_000);
+    }
+
+    /// A read buffer over the most kept is let go after the read; the next,
+    /// smaller read still gets its bytes.
+    #[test]
+    fn a_read_buffer_over_the_most_is_let_go() {
+        use super::{READ, with_read_keeping};
+        const MOST: usize = 1 << 20;
+        with_read_keeping(4 * MOST, Some(MOST), |bytes| {
+            assert_eq!(bytes.len(), 4 * MOST)
+        });
+        assert_eq!(READ.with(|read| read.borrow().capacity()), 0);
+        with_read_keeping(1000, Some(MOST), |bytes| assert_eq!(bytes.len(), 1000));
+        let kept = READ.with(|read| read.borrow().capacity());
+        assert!((1000..=MOST).contains(&kept), "{kept}");
+    }
 
     /// Title memory whose tail is reserved and not committed reads through
     /// the copy as its bytes and then zeros, without a fault; so does
@@ -2160,7 +2286,7 @@ mod allocation_costs {
                 seen.push(digest(&bytes));
             }
         }
-        let text: Vec<u8> = (0..400u32).map(|i| (i * 37 >> 2) as u8).collect();
+        let text: Vec<u8> = (0..400u32).map(|i| ((i * 37) >> 2) as u8).collect();
         for at in 0..399 {
             let mut bytes = text.clone();
             bytes.swap(at, at + 1);
