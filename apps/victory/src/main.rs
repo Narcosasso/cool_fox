@@ -29,6 +29,8 @@ struct Cli {
     command: Command,
 }
 
+// Parsed once at start: the size of the largest variant does not matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Command {
     /// Summarise one PE image: headers, sections, imports, TLS, build id.

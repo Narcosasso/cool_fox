@@ -1214,7 +1214,9 @@ impl Player {
                 word(if s.kind == slot::SRV { 4 } else { 2 }),
                 word(if s.kind == slot::SRV { 6 } else { 4 }),
                 word(if s.kind == slot::SRV { 7 } else { 5 }),
-                word(if s.kind == slot::SRV { 8 } else { 8 }),
+                // Flags sit at byte 32 of both descriptions: the UAV's buffer has an
+                // 8-byte counter offset where the SRV's has its 4-byte padding and stride.
+                word(8),
             ),
         }
     }
