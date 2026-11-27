@@ -154,7 +154,10 @@ extern "system" fn open_file(_: Factory, path: *const u16, iid: *const Guid, out
     if stream_log::on() {
         stream_log::line(format_args!("F\t{:x}\t{kept}", file as usize));
     }
-    WALLS_FILES.lock().unwrap_or_else(|e| e.into_inner()).push((file as usize, kept));
+    // Only the walls trace reads the list, so it isn't kept without it.
+    if walls_trace() > 0 {
+        WALLS_FILES.lock().unwrap_or_else(|e| e.into_inner()).push((file as usize, kept));
+    }
     put(out, file)
 }
 
@@ -600,6 +603,13 @@ struct Job {
 // SAFETY: as for `Lane`.
 unsafe impl Send for Job {}
 
+/// How many workers: `VICTORY_DSTORAGE_WORKERS=n` (1 to 64), or one per
+/// logical processor. Fewer leaves more of the processors to the frame
+/// threads during streaming bursts, but loading can take longer.
+fn worker_count(asked: Option<usize>, processors: usize) -> usize {
+    asked.map_or(processors, |n| n.clamp(1, 64))
+}
+
 /// The scheduler, with its workers started on first use; `None` if not
 /// even one worker could start.
 fn scheduler() -> Option<&'static Scheduler> {
@@ -629,16 +639,31 @@ fn scheduler() -> Option<&'static Scheduler> {
         })
         .as_ref()?;
     STARTED.call_once(|| {
-        let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
+        let workers = worker_count(
+            std::env::var("VICTORY_DSTORAGE_WORKERS").ok().and_then(|v| v.trim().parse().ok()),
+            std::thread::available_parallelism().map_or(4, |n| n.get()),
+        );
+        // `VICTORY_DSTORAGE_PRIORITY=below`: workers below normal, behind the
+        // frame threads (the title's own streaming thread already is).
+        let below = std::env::var("VICTORY_DSTORAGE_PRIORITY").is_ok_and(|v| v.trim() == "below");
         let started = (0..workers)
             .filter(|i| {
                 std::thread::Builder::new()
                     .name(format!("dstorage {i}"))
-                    .spawn(|| work(scheduler))
+                    .spawn(move || {
+                        if below {
+                            use windows_sys::Win32::System::Threading::{
+                                GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+                            };
+                            // SAFETY: the pseudo-handle of the calling thread.
+                            unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL) };
+                        }
+                        work(scheduler)
+                    })
                     .is_ok()
             })
             .count();
-        tracing::info!(workers = started, "dstorage: workers");
+        tracing::info!(workers = started, below, "dstorage: workers");
     });
     Some(scheduler)
 }
@@ -675,7 +700,8 @@ fn walls_request(request: &Request, result: &Result<(), HRESULT>, started: std::
     } else {
         let files = WALLS_FILES.lock().unwrap_or_else(|e| e.into_inner());
         let source = request.source as usize;
-        files.iter().find(|f| f.0 == source).map_or_else(|| "?".to_string(), |f| f.1.clone())
+        // From the back: an address used again names the file opened last.
+        files.iter().rev().find(|f| f.0 == source).map_or_else(|| "?".to_string(), |f| f.1.clone())
     };
     let hr = match result {
         Ok(()) => 0,
@@ -1413,6 +1439,8 @@ fn execute(request: &Request) -> Result<(), HRESULT> {
         let mut packed = vec![0; request.intermediate_size as usize];
         let n = inflate(&source, &mut packed).map_err(|hr| fail(hr, "zlib"))?;
         packed.truncate(n);
+        // The compressed bytes aren't needed past here: not held while BCPack unpacks.
+        drop(source);
         Cow::Owned(packed)
     } else {
         source
@@ -2274,6 +2302,15 @@ mod tests {
         assert!(l.start().is_none());
         l.finish(&second, Ok(()));
         assert!(l.start().is_some());
+    }
+
+    #[test]
+    fn worker_count_follows_the_processors_and_the_switch() {
+        assert_eq!(worker_count(None, 24), 24);
+        assert_eq!(worker_count(None, 128), 128); // unset: as before, unclamped
+        assert_eq!(worker_count(Some(0), 24), 1);
+        assert_eq!(worker_count(Some(8), 24), 8);
+        assert_eq!(worker_count(Some(100), 24), 64);
     }
 
     #[test]

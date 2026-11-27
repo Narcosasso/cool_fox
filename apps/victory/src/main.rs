@@ -3,9 +3,12 @@
 //! Every command reads the user's own files and writes only to stdout or to
 //! the user's cache directory (outside the repository).
 
+#[cfg(all(windows, feature = "agility-sdk"))]
+mod agility;
 mod census;
 mod compare;
 mod inspect;
+mod memcmp;
 #[cfg(all(windows, feature = "diagnostics"))]
 mod replay;
 mod run;
@@ -126,6 +129,9 @@ enum Command {
         /// Only the pipelines earlier runs drew with.
         #[arg(long)]
         used: bool,
+        /// Print a no-host line with the fingerprint and pipeline key for each refusal.
+        #[arg(long)]
+        list_no_host: bool,
         /// (What the processes it starts are given.)
         #[arg(long, hide = true)]
         these: Option<String>,
@@ -227,7 +233,9 @@ fn main() -> Result<()> {
         }
         Command::Shaders { paths, jobs } => translate::precompile(paths, jobs),
         #[cfg(windows)]
-        Command::Warm { jobs, limit, again, used, these } => warm::run(jobs, limit, again, used, these),
+        Command::Warm { jobs, limit, again, used, list_no_host, these } => {
+            warm::run(jobs, limit, again, used, list_no_host, these)
+        }
         Command::Run {
             exe,
             unimplemented,
